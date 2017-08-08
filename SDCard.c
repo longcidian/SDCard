@@ -2,7 +2,7 @@
 * Name		: SD card
 * Brief		: access an SD card
 * Author	: longcd
-* LastEdit	: 2017/8/3
+* LastEdit	: 2017/8/8
 ********************************************************************************
 */
 
@@ -29,6 +29,7 @@ typedef unsigned int u32;
 #define CMD8		(0X40 + 8)
 #define CMD9		(0X40 + 9)	//read CSD register
 #define CMD17		(0X40 + 17)
+#define CMD24		(0X40 + 24)
 #define CMD41		(0X40 + 41)
 #define CMD55		(0X40 + 55)
 #define CMD58		(0X40 + 58)
@@ -192,7 +193,7 @@ SDCard_ret_t SDCard_readBlock(u32 block,u8 *buf)
 		return SD_CMD17_ERR;
 	}
 	
-	//wait data ready
+	//wait start block token
 	for(i = 0; i < 100; i++){
 		ret = SD_SPI_readByte();
 		if(ret == 0xfe) break;
@@ -202,11 +203,108 @@ SDCard_ret_t SDCard_readBlock(u32 block,u8 *buf)
 		return SD_CMD17_ERR;
 	}
 	
-	//get data
+	//get block data
 	for(i = 0; i < 512; i++){
 		*buf++ = SD_SPI_readByte();
+	}
+
+	//get CRC
+	for(i = 0; i < 2; i++){
+		SD_SPI_readByte();
 	}
 	
 	SD_SPI_CS_high();
 	return SD_RET_OK;
+}
+
+/*	write a block(512 bytes)
+ */
+SDCard_ret_t SDCard_writeBlock(u32 block, u8 *buf)
+{
+	u16 i;
+	u8 ret;
+	
+	SD_SPI_CS_low();
+	
+	//send cmd
+	SDCard_sendCmd(CMD24,block,0xff);
+	for(i = 0; i < 8; i++){
+		ret = SD_SPI_readByte();
+		if(ret == 0x00) break;
+	}
+
+	if(ret != 0x00){	//not replied?
+		return SD_CMD24_ERR;
+	}
+	
+	//send start block token
+	for(i = 0; i < 50; i++){
+		SD_SPI_writeByte(DUMMY_BYTE);
+	}
+	SD_SPI_writeByte(0xfe);
+	
+	//send block data
+	for(i = 0; i < 512; i++){
+		SD_SPI_writeByte(*buf++);
+	}
+	
+	//send CRC
+	SD_SPI_writeByte(DUMMY_BYTE);
+	SD_SPI_writeByte(DUMMY_BYTE);
+	
+	//get response
+	if((SD_SPI_readByte() & 0x1f) != 0x05){	//data not accepted?
+		return SD_CMD24_ERR;
+	}
+
+	//wait write complete
+	while(SD_SPI_readByte() != 0xff);
+
+	SD_SPI_CS_high();
+	return SD_RET_OK;
+}
+
+/*	used for FatFs
+ */
+u8 MMC_disk_status(void)
+{
+	//return 0 means OK for testing
+	return 0;
+}
+
+/*	used for FatFs
+ */
+SDCard_ret_t MMC_disk_initialize(void)
+{
+	return(SDCard_init());
+}
+
+/*	used for FatFs
+ */
+SDCard_ret_t MMC_disk_read(u8 *buff,u32 sector, u32 count)
+{
+	SDCard_ret_t ret;
+	
+	while(count--){
+		ret = SDCard_readBlock(sector, buff);
+		sector += 512;
+		if(ret != SD_RET_OK) break;
+	}
+	
+	return ret;
+}
+
+/*	used for FatFs
+ */
+SDCard_ret_t MMC_disk_write(const u8 *buff, u32 sector, u32 count)
+{
+	SDCard_ret_t ret;
+	
+	while(count--){
+		ret = SDCard_writeBlock(sector, (u8 *)buff);
+		sector += 512;
+		if(ret != SD_RET_OK) break;
+	}
+
+	return ret;
 }
